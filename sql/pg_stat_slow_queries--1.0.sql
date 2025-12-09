@@ -26,7 +26,22 @@ CREATE TABLE monitoring.pg_stat_slow_queries (
   CONSTRAINT uq_pid_querystart UNIQUE (pid, query_start)
 );
 
+CREATE TABLE monitoring.pg_stat_db_connections (
+    bucket_time TIMESTAMPTZ NOT NULL,                  -- Start of 5-min bucket (e.g., 13:00:00)
+    usename TEXT NOT NULL,                             -- Database user
+    datname TEXT NOT NULL,                             -- Database name
+    backend_type TEXT NOT NULL,                      
+    state TEXT,                               
+    connection_count INTEGER,
+    avg_query_durations INTERVAL[] DEFAULT '{}',
+    max_query_durations INTERVAL[] DEFAULT '{}',
+    client_addrs TEXT[] DEFAULT '{}',
+    memory_consumption_kb INTEGER,
+    PRIMARY KEY (usename, datname, backend_type,state, bucket_time)
+);
+
 GRANT SELECT ON monitoring.pg_stat_slow_queries to public;
+GRANT SELECT ON monitoring.pg_stat_db_connections to public;
 
 -- Logger function
 CREATE OR REPLACE FUNCTION monitoring.log_slow_queries(threshold_seconds integer DEFAULT 10)
@@ -75,9 +90,41 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION monitoring.collect_connection_stats() RETURNS void AS $$
+BEGIN
+    INSERT INTO monitoring.pg_stat_db_connections (
+        bucket_time,
+        usename,
+        datname,
+        backend_type,
+        state,
+        connection_count,
+        avg_query_durations,
+        max_query_durations,
+        client_addrs
+    )
+    SELECT
+        now(),
+        sa.usename,
+        sa.datname,
+        sa.backend_type,
+        sa.state,
+        COUNT(*),
+        ARRAY[AVG(now() - sa.query_start)],
+        ARRAY[MAX(now() - sa.query_start)],
+        ARRAY_AGG(DISTINCT sa.client_addr)
+    FROM pg_stat_activity sa
+    WHERE sa.state is not null 
+    GROUP BY sa.usename, sa.datname, sa.backend_type, sa.state;
+END;
+$$ LANGUAGE plpgsql;
+
+
 -- Indexes
 CREATE INDEX ON monitoring.pg_stat_slow_queries (query_start);
 CREATE INDEX ON monitoring.pg_stat_slow_queries (duration_running);
+CREATE INDEX idx_connection_capture_time on monitoring.pg_stat_db_connections(bucket_time);
+CREATE INDEX idx_connection_connection_counts on monitoring.pg_stat_db_connections(connection_count);
 
 -- Optional: helper to register a cron job (requires superuser and pg_cron)
 CREATE OR REPLACE FUNCTION monitoring.schedule_logger(job_name text DEFAULT 'log-slow-queries', interval_text text DEFAULT '3 seconds', threshold_seconds integer DEFAULT 10)
@@ -86,5 +133,15 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
   PERFORM cron.schedule(job_name, interval_text, format('SELECT monitoring.log_slow_queries(%L);', threshold_seconds));
+END;
+$$;
+
+-- Optional: helper to register a cron to schedule connection logging
+CREATE OR REPLACE FUNCTION monitoring.schedule_connection_logger(job_name text DEFAULT 'log-connections', interval_text text DEFAULT '30 seconds')
+RETURNS void
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  PERFORM cron.schedule(job_name, interval_text, 'SELECT monitoring.collect_connection_stats();');
 END;
 $$;
