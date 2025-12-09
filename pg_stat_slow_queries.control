@@ -1,0 +1,5 @@
+comment = 'Log slow queries with wait events and memory usage'
+default_version = '1.0'
+relocatable = false
+requires = 'pg_cron'
+superuser = true  # needed only if you auto-schedule;
