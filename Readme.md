@@ -9,3 +9,8 @@
 - Optional schedule: `SELECT monitoring.schedule_connection_logger('log-connection-stats', <interval>);`.
 - Security: requires access to `pg_stat_activity`.
 - Security: the cron helper also needs superuser privileges.
+
+
+## License
+
+This project is licensed under the PostgreSQL License. See the `LICENSE` file for details.
